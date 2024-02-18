@@ -4,6 +4,9 @@ Simple class for local offline license keys generation and validation based on h
 Example usage:
 
 ```python
+from datetime import datetime, timedelta
+import LicenseKeyManager
+
 def main():
     """
     Main function to demonstrate license key generation, writing, reading, and validation.
