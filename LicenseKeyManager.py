@@ -231,3 +231,18 @@ class LicenseKeyManager:
 
         LicenseKeyManager.write_private_key_file(private_key_pem)
         LicenseKeyManager.write_public_key_file(public_key_pem)
+
+        @staticmethod
+    def get_expiration_date_from_license_key(license_key):
+        """
+        Extract the expiration date from the license key.
+
+        Args:
+            license_key (str): The license key.
+
+        Returns:
+            str: The expiration date in '%Y-%m-%d %H:%M:%S' format.
+        """
+        decoded_license_key = base64.b64decode(license_key.encode())
+        expiration_date_str = decoded_license_key[17:36].decode()
+        return expiration_date_str
