@@ -5,7 +5,7 @@ Example usage:
 
 ```python
 from datetime import datetime, timedelta
-import LicenseKeyManager
+from LicenseKeyManager import LicenseKeyManager
 
 def main():
     """
