@@ -232,7 +232,7 @@ class LicenseKeyManager:
         LicenseKeyManager.write_private_key_file(private_key_pem)
         LicenseKeyManager.write_public_key_file(public_key_pem)
 
-        @staticmethod
+    @staticmethod
     def get_expiration_date_from_license_key(license_key):
         """
         Extract the expiration date from the license key.
