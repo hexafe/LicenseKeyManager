@@ -29,8 +29,8 @@ def main():
 
     # Generate the license key and expiration date
     days_to_expire = 7
-    expiration_date = (datetime.now() + timedelta(days=days_to_expire)).strftime("%Y-%m-%d %H:%M:%S")
     license_key = license_manager.generate_license_key(hardware_id, days_to_expire, private_key)
+    expiration_date = license_manager.get_expiration_date_from_license_key(license_key)
     print("Generated License Key:", license_key)
     print("Expiration Date:", expiration_date)
 
