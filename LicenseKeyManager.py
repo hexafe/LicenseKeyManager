@@ -52,8 +52,10 @@ class LicenseKeyManager:
             str: The generated license key.
         """
         private_key = serialization.load_pem_private_key(private_key, password=None, backend=default_backend())
-        expiration_date = (datetime.now() + timedelta(days=days_to_expire)).strftime("%Y-%m-%d %H:%M:%S")
-        license_data = f"{hardware_id}{expiration_date}".encode()
+        expiration_date = datetime.now() + timedelta(days=days_to_expire)
+        expiration_date = expiration_date.replace(hour=23, minute=59, second=59)
+        expiration_date_str = expiration_date.strftime("%Y-%m-%d %H:%M:%S")
+        license_data = f"{hardware_id}{expiration_date_str}".encode()
         signature = LicenseKeyManager.sign_data(license_data, private_key)
         license_key = base64.b64encode(license_data + signature).decode()
         return license_key
