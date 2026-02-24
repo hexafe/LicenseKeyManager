@@ -1,250 +1,253 @@
-import uuid
 import base64
+import binascii
+import json
+import os
+import uuid
 from datetime import datetime, timedelta
+from typing import Optional
+
 from cryptography.hazmat.backends import default_backend
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import rsa, padding
-from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding, rsa
+
 
 class LicenseKeyManager:
-    """
-    A class to manage license generation and validation
-    """
+    """A class to manage license generation and validation."""
 
     @staticmethod
     def generate_rsa_key_pair():
-        """
-        Generate an RSA public-private key pair.
-        
-        Returns:
-            tuple: (private_key, public_key)
-        """
+        """Generate an RSA public-private key pair."""
         private_key = rsa.generate_private_key(
             public_exponent=65537,
             key_size=2048,
-            backend=default_backend()
+            backend=default_backend(),
         )
-        public_key = private_key.public_key()
-        return private_key, public_key
+        return private_key, private_key.public_key()
 
     @staticmethod
     def generate_hardware_id():
-        """
-        Generate a hardware ID based on the MAC address of the network adapter.
-        
-        Returns:
-            str: The generated hardware ID.
-        """
-        mac = ':'.join(hex(i)[2:].zfill(2) for i in uuid.getnode().to_bytes(6, 'big'))
-        return mac
+        """Generate a hardware ID based on the network adapter MAC address."""
+        return ":".join(hex(i)[2:].zfill(2) for i in uuid.getnode().to_bytes(6, "big"))
 
     @staticmethod
-    def generate_license_key(hardware_id, days_to_expire, private_key):
-        """
-        Generate a license key.
-
-        Args:
-            hardware_id (str): The hardware ID.
-            days_to_expire (int): Number of days until the license key expires.
-            private_key (bytes): The private key used for signing.
-
-        Returns:
-            str: The generated license key.
-        """
-        private_key = serialization.load_pem_private_key(private_key, password=None, backend=default_backend())
+    def _get_expiration_date_str(days_to_expire: int) -> str:
         expiration_date = datetime.now() + timedelta(days=days_to_expire)
         expiration_date = expiration_date.replace(hour=23, minute=59, second=59)
-        expiration_date_str = expiration_date.strftime("%Y-%m-%d %H:%M:%S")
-        license_data = f"{hardware_id}{expiration_date_str}".encode()
-        signature = LicenseKeyManager.sign_data(license_data, private_key)
-        license_key = base64.b64encode(license_data + signature).decode()
-        return license_key
+        return expiration_date.strftime("%Y-%m-%d %H:%M:%S")
+
+    @staticmethod
+    def _encode_license_container(payload: dict, signature: bytes) -> str:
+        container = {
+            "payload": payload,
+            "signature": base64.b64encode(signature).decode("utf-8"),
+        }
+        raw = json.dumps(container, separators=(",", ":")).encode("utf-8")
+        return base64.b64encode(raw).decode("utf-8")
+
+    @staticmethod
+    def _decode_license_container(license_key: str) -> Optional[tuple]:
+        """Decode and validate outer/base schema of a license key."""
+        try:
+            decoded = base64.b64decode(license_key.encode("utf-8"), validate=True)
+            container = json.loads(decoded.decode("utf-8"))
+        except (ValueError, json.JSONDecodeError, binascii.Error, UnicodeDecodeError):
+            return None
+
+        if not isinstance(container, dict):
+            return None
+
+        payload = container.get("payload")
+        signature_b64 = container.get("signature")
+
+        if not isinstance(payload, dict) or not isinstance(signature_b64, str):
+            return None
+
+        hardware_id = payload.get("hardware_id")
+        expiration_date = payload.get("expiration_date")
+        if not isinstance(hardware_id, str) or not isinstance(expiration_date, str):
+            return None
+
+        try:
+            signature = base64.b64decode(signature_b64.encode("utf-8"), validate=True)
+        except (ValueError, binascii.Error):
+            return None
+
+        payload_data = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+        return payload, payload_data, signature
+
+    @staticmethod
+    def generate_license_key(hardware_id, days_to_expire, private_key, private_key_password=None):
+        """Generate a signed license key for a hardware ID."""
+        private_key_obj = serialization.load_pem_private_key(
+            private_key,
+            password=private_key_password,
+            backend=default_backend(),
+        )
+
+        payload = {
+            "hardware_id": hardware_id,
+            "expiration_date": LicenseKeyManager._get_expiration_date_str(days_to_expire),
+        }
+        payload_data = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+        signature = LicenseKeyManager.sign_data(payload_data, private_key_obj)
+        return LicenseKeyManager._encode_license_container(payload, signature)
 
     @staticmethod
     def validate_license_key(license_key, hardware_id, public_key):
-        """
-        Validate a license key.
-        
-        Args:
-            license_key (str): The license key to validate.
-            hardware_id (str): The hardware ID to match against.
-            public_key (bytes): The public key used for signature verification.
-        
-        Returns:
-            bool: True if the license key is valid, False otherwise.
-        """
-        license_data, signature = base64.b64decode(license_key.encode())[:-256], base64.b64decode(license_key.encode())[-256:]
-        if not LicenseKeyManager.verify_signature(license_data, signature, public_key):
+        """Validate a license key. Returns False for any malformed/tampered input."""
+        decoded = LicenseKeyManager._decode_license_container(license_key)
+        if decoded is None:
             return False
 
-        expiration_date_str = license_data[17:].decode()
-        expiration_date = datetime.strptime(expiration_date_str, "%Y-%m-%d %H:%M:%S")
-        current_date = datetime.now()
+        payload, payload_data, signature = decoded
 
-        stored_hardware_id = license_data[:17].decode()
+        if not LicenseKeyManager.verify_signature(payload_data, signature, public_key):
+            return False
 
-        return current_date <= expiration_date and stored_hardware_id == hardware_id
+        try:
+            expiration_date = datetime.strptime(payload["expiration_date"], "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            return False
+
+        return datetime.now() <= expiration_date and payload["hardware_id"] == hardware_id
 
     @staticmethod
     def sign_data(data, private_key):
-        """
-        Sign data using the private key.
-        
-        Args:
-            data (bytes): The data to sign.
-            private_key (bytes): The private key used for signing.
-        
-        Returns:
-            bytes: The signature.
-        """
+        """Sign data using the private key."""
         return private_key.sign(
             data,
-            padding.PSS(
-                mgf=padding.MGF1(hashes.SHA256()),
-                salt_length=padding.PSS.MAX_LENGTH
-            ),
-            hashes.SHA256()
+            padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.MAX_LENGTH),
+            hashes.SHA256(),
         )
 
     @staticmethod
     def verify_signature(data, signature, public_key):
-        """
-        Verify the signature of data using the public key.
-        
-        Args:
-            data (bytes): The data whose signature needs to be verified.
-            signature (bytes): The signature to verify.
-            public_key (bytes): The public key used for verification.
-        
-        Returns:
-            bool: True if the signature is valid, False otherwise.
-        """
+        """Verify the signature of data using the public key."""
         try:
             public_key.verify(
                 signature,
                 data,
-                padding.PSS(
-                    mgf=padding.MGF1(hashes.SHA256()),
-                    salt_length=padding.PSS.MAX_LENGTH
-                ),
-                hashes.SHA256()
+                padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.MAX_LENGTH),
+                hashes.SHA256(),
             )
             return True
-        except Exception as e:
-            print("Signature verification failed:", e)
+        except Exception:
             return False
 
     @staticmethod
     def write_license_key_file(encrypted_key):
-        """
-        Write the encrypted license key to a license key file.
-        
-        Args:
-            encrypted_key (str): The encrypted license key.
-        """
-        with open("license.key", "w") as file:
+        """Write the license key to a license key file."""
+        with open("license.key", "w", encoding="utf-8") as file:
             file.write(encrypted_key)
 
     @staticmethod
     def read_license_key_file():
-        """
-        Read the encrypted license key from the license key file.
-        
-        Returns:
-            str: The encrypted license key.
-        """
+        """Read the license key from the license key file."""
         try:
-            with open("license.key", "r") as file:
-                encrypted_key = file.read().strip()
-            return encrypted_key
+            with open("license.key", "r", encoding="utf-8") as file:
+                return file.read().strip()
         except FileNotFoundError:
             return None
 
     @staticmethod
     def write_private_key_file(private_key_pem):
-        """
-        Write the private key to a file.
-        
-        Args:
-            private_key_pem (bytes): The private key to write.
-        """
-        with open("private.key", "wb") as file:
-            file.write(private_key_pem)
+        """Write the private key with restrictive permissions."""
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+        fd = os.open("private.key", flags, 0o600)
+        try:
+            with os.fdopen(fd, "wb") as file:
+                file.write(private_key_pem)
+        finally:
+            try:
+                os.chmod("private.key", 0o600)
+            except FileNotFoundError:
+                pass
 
     @staticmethod
     def read_private_key_file():
-        """
-        Read the private key from a file.
-        
-        Returns:
-            bytes: The private key.
-        """
+        """Read the private key from a file."""
         try:
             with open("private.key", "rb") as file:
-                private_key_pem = file.read()
-            return private_key_pem
-        except FileNotFoundError:
-            return None
-        
-    @staticmethod
-    def write_public_key_file(public_key_pem):
-        """
-        Write the public key to a file.
-        
-        Args:
-            public_key_pem (bytes): The public key to write.
-        """
-        with open("public.key", "wb") as file:
-            file.write(public_key_pem)    
-    
-    @staticmethod
-    def read_public_key_file():
-        """
-        Read the public key from a file.
-        
-        Returns:
-            bytes: The public key.
-        """
-        try:
-            with open("public.key", "rb") as file:
-                public_key_pem = file.read()
-            public_key = serialization.load_pem_public_key(public_key_pem, backend=default_backend())
-            return public_key
+                return file.read()
         except FileNotFoundError:
             return None
 
     @staticmethod
-    def generate_keys_and_write_to_files():
-        """
-        Generate RSA public-private key pair and write them to files.
+    def write_public_key_file(public_key_pem):
+        """Write the public key to a file."""
+        with open("public.key", "wb") as file:
+            file.write(public_key_pem)
+
+    @staticmethod
+    def read_public_key_file():
+        """Read the public key from a file."""
+        try:
+            with open("public.key", "rb") as file:
+                return serialization.load_pem_public_key(file.read(), backend=default_backend())
+        except FileNotFoundError:
+            return None
+
+    @staticmethod
+    def generate_keys_and_write_to_files(private_key_password: Optional[bytes] = None):
+        """Generate RSA key pair and write them to files.
+
+        Args:
+            private_key_password: Optional bytes password for private key PEM encryption.
         """
         private_key, public_key = LicenseKeyManager.generate_rsa_key_pair()
 
+        encryption_algorithm = (
+            serialization.BestAvailableEncryption(private_key_password)
+            if private_key_password
+            else serialization.NoEncryption()
+        )
         private_key_pem = private_key.private_bytes(
             encoding=serialization.Encoding.PEM,
             format=serialization.PrivateFormat.TraditionalOpenSSL,
-            encryption_algorithm=serialization.NoEncryption()
+            encryption_algorithm=encryption_algorithm,
         )
-
         public_key_pem = public_key.public_bytes(
             encoding=serialization.Encoding.PEM,
-            format=serialization.PublicFormat.SubjectPublicKeyInfo
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
         )
 
         LicenseKeyManager.write_private_key_file(private_key_pem)
         LicenseKeyManager.write_public_key_file(public_key_pem)
 
     @staticmethod
+    def get_verified_expiration_date_from_license_key(license_key, public_key):
+        """Return expiration date only if signature verifies; otherwise None."""
+        decoded = LicenseKeyManager._decode_license_container(license_key)
+        if decoded is None:
+            return None
+
+        payload, payload_data, signature = decoded
+        if not LicenseKeyManager.verify_signature(payload_data, signature, public_key):
+            return None
+
+        try:
+            datetime.strptime(payload["expiration_date"], "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            return None
+
+        return payload["expiration_date"]
+
+    @staticmethod
     def get_expiration_date_from_license_key(license_key):
-        """
-        Extract the expiration date from the license key.
+        """Backward-compatible parser for expiration date, returns None when malformed."""
+        decoded = LicenseKeyManager._decode_license_container(license_key)
+        if decoded is None:
+            return None
+        payload, _, _ = decoded
+        return payload.get("expiration_date")
 
-        Args:
-            license_key (str): The license key.
+    @staticmethod
+    def is_license_valid_for_current_machine():
+        """Canonical client-runtime license gate."""
+        license_key = LicenseKeyManager.read_license_key_file()
+        public_key = LicenseKeyManager.read_public_key_file()
+        if not license_key or public_key is None:
+            return False
 
-        Returns:
-            str: The expiration date in '%Y-%m-%d %H:%M:%S' format.
-        """
-        decoded_license_key = base64.b64decode(license_key.encode())
-        expiration_date_str = decoded_license_key[17:36].decode()
-        return expiration_date_str
+        hardware_id = LicenseKeyManager.generate_hardware_id()
+        return LicenseKeyManager.validate_license_key(license_key, hardware_id, public_key)

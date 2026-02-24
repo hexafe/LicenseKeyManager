@@ -1,52 +1,76 @@
 # LicenseKeyManager
-Simple class for local offline license keys generation and validation based on hardware id
 
-Example usage:
+Simple offline license generation and validation based on hardware ID.
+
+## Security model
+
+- **Issuer side (admin/backoffice only):** holds `private.key`, generates licenses.
+- **Client runtime (shipped app):** holds only `public.key`, validates `license.key`.
+
+> Never ship `private.key` with your client artifacts.
+
+## Issuer flow (trusted environment)
 
 ```python
-from datetime import datetime, timedelta
 from LicenseKeyManager import LicenseKeyManager
 
-def main():
-    """
-    Main function to demonstrate license key generation, writing, reading, and validation.
-    """
-    # Generate the hardware ID
-    hardware_id = LicenseKeyManager.generate_hardware_id()
-    
-    # Generate and save public and private keys
-    LicenseKeyManager.generate_keys_and_write_to_files()
-    
-    private_key = LicenseKeyManager.read_private_key_file()
-    public_key = LicenseKeyManager.read_public_key_file()
-    
-    if private_key is None or public_key is None:
-        print("Failed to read keys.")
-        return
+# 1) Generate key pair once (optionally encrypt private.key)
+LicenseKeyManager.generate_keys_and_write_to_files(private_key_password=b"strong-passphrase")
 
-    # Generate the license key and expiration date
-    days_to_expire = 7
-    license_key = LicenseKeyManager.generate_license_key(hardware_id, days_to_expire, private_key)
-    expiration_date = LicenseKeyManager.get_expiration_date_from_license_key(license_key)
-    print("Generated License Key:", license_key)
-    print("Expiration Date:", expiration_date)
+# 2) Create a license for a specific hardware ID
+private_key_pem = LicenseKeyManager.read_private_key_file()
+hardware_id = "aa:bb:cc:dd:ee:ff"  # collected from target machine
+license_key = LicenseKeyManager.generate_license_key(
+    hardware_id,
+    days_to_expire=30,
+    private_key=private_key_pem,
+    private_key_password=b"strong-passphrase",
+)
 
-    # Write the license key to a file
-    LicenseKeyManager.write_license_key_file(license_key)
-    print("License Key written to file.")
+# 3) Deliver only license.key + public.key to client
+LicenseKeyManager.write_license_key_file(license_key)
+```
 
-    # Load the license key from the file
-    stored_license_key = LicenseKeyManager.read_license_key_file()
-    print("License Key read from file.")
+## Client runtime flow (shipped app)
 
-    # Validate the license key
-    if stored_license_key and public_key:
-        if LicenseKeyManager.validate_license_key(stored_license_key, hardware_id, public_key):
-            print("License Key is Valid!")
-        else:
-            print("Invalid License Key or No License Key Found!")
-    else:
-        print("No License Key or Public Key Found!")
+Bundle:
+- `public.key`
+- `license.key`
 
-if __name__ == "__main__":
-    main()
+At startup:
+
+```python
+from LicenseKeyManager import LicenseKeyManager
+
+if not LicenseKeyManager.is_license_valid_for_current_machine():
+    raise SystemExit("License validation failed")
+
+# launch protected features
+```
+
+## License format
+
+License key is base64(JSON) with this structure:
+
+```json
+{
+  "payload": {
+    "hardware_id": "aa:bb:cc:dd:ee:ff",
+    "expiration_date": "2026-12-31 23:59:59"
+  },
+  "signature": "<base64-signature>"
+}
+```
+
+Runtime validation performs strict decode and schema checks and returns `False` for malformed input.
+
+## Verified expiration helper
+
+Use verified expiration read when needed:
+
+```python
+public_key = LicenseKeyManager.read_public_key_file()
+exp = LicenseKeyManager.get_verified_expiration_date_from_license_key(license_key, public_key)
+```
+
+Returns `None` if malformed or signature-invalid.
