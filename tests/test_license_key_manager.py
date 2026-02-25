@@ -215,8 +215,11 @@ def test_generate_hardware_id_uses_machine_id(monkeypatch):
 def test_generate_hardware_id_fallback_is_stable(monkeypatch):
     monkeypatch.setattr(platform, "system", lambda: "Linux")
     monkeypatch.setattr(platform, "node", lambda: "host-1")
+    monkeypatch.setattr(platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(platform, "processor", lambda: "generic-cpu")
+    monkeypatch.setattr(platform, "release", lambda: "6.8.0")
+    monkeypatch.setattr(platform, "version", lambda: "#1 SMP")
     monkeypatch.setattr(LicenseKeyManager, "_read_text_file", staticmethod(lambda _: None))
-    monkeypatch.setattr("uuid.getnode", lambda: 123456789)
 
     first = LicenseKeyManager.generate_hardware_id()
     second = LicenseKeyManager.generate_hardware_id()
@@ -224,6 +227,46 @@ def test_generate_hardware_id_fallback_is_stable(monkeypatch):
     assert first == second
     assert len(first) == 32
     assert ":" not in first
+
+
+def test_generate_hardware_id_fallback_changes_with_platform_metadata(monkeypatch):
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
+    monkeypatch.setattr(platform, "node", lambda: "host-1")
+    monkeypatch.setattr(platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(platform, "processor", lambda: "generic-cpu")
+    monkeypatch.setattr(platform, "release", lambda: "6.8.0")
+    monkeypatch.setattr(platform, "version", lambda: "#1 SMP")
+    monkeypatch.setattr(LicenseKeyManager, "_read_text_file", staticmethod(lambda _: None))
+
+    baseline = LicenseKeyManager.generate_hardware_id()
+
+    monkeypatch.setattr(platform, "node", lambda: "host-2")
+    changed = LicenseKeyManager.generate_hardware_id()
+
+    assert baseline != changed
+
+
+def test_generate_hardware_id_fallback_prefers_host_identifier_files(monkeypatch):
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
+    monkeypatch.setattr(platform, "node", lambda: "host-1")
+    monkeypatch.setattr(platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(platform, "processor", lambda: "generic-cpu")
+    monkeypatch.setattr(platform, "release", lambda: "6.8.0")
+    monkeypatch.setattr(platform, "version", lambda: "#1 SMP")
+
+    values = {"/etc/hostid": "hostid-1"}
+    monkeypatch.setattr(
+        LicenseKeyManager,
+        "_read_text_file",
+        staticmethod(lambda path: values.get(path)),
+    )
+
+    first = LicenseKeyManager.generate_hardware_id()
+
+    values["/etc/hostid"] = "hostid-2"
+    second = LicenseKeyManager.generate_hardware_id()
+
+    assert first != second
 
 
 def test_write_private_key_file_does_not_use_chmod(monkeypatch, tmp_path):
