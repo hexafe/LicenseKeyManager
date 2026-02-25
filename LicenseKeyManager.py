@@ -247,14 +247,10 @@ class LicenseKeyManager:
         if hasattr(os, "O_NOFOLLOW"):
             flags |= os.O_NOFOLLOW
         fd = os.open("private.key", flags, 0o600)
-        try:
-            with os.fdopen(fd, "wb") as file:
-                file.write(private_key_pem)
-        finally:
-            try:
-                os.chmod("private.key", 0o600)
-            except FileNotFoundError:
-                pass
+        if hasattr(os, "fchmod"):
+            os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "wb") as file:
+            file.write(private_key_pem)
 
     @staticmethod
     def read_private_key_file():
