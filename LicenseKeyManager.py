@@ -5,7 +5,6 @@ import os
 import platform
 import re
 import subprocess
-import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -101,7 +100,26 @@ class LicenseKeyManager:
             if platform_uuid:
                 return LicenseKeyManager._build_hardware_id(f"darwin:{platform_uuid}")
 
-        fallback_seed = f"{platform.system()}|{platform.node()}|{uuid.getnode()}"
+        fallback_parts = [
+            f"system={platform.system()}",
+            f"node={platform.node()}",
+            f"machine={platform.machine()}",
+            f"processor={platform.processor()}",
+            f"release={platform.release()}",
+            f"version={platform.version()}",
+        ]
+
+        for path in (
+            "/etc/hostid",
+            "/sys/class/dmi/id/product_uuid",
+            "/sys/devices/virtual/dmi/id/product_uuid",
+            "/proc/device-tree/serial-number",
+        ):
+            value = LicenseKeyManager._read_text_file(path)
+            if value:
+                fallback_parts.append(f"file:{path}={value}")
+
+        fallback_seed = "|".join(fallback_parts)
         return LicenseKeyManager._build_hardware_id(f"fallback:{fallback_seed}")
 
     @staticmethod

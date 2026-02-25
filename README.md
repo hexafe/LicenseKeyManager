@@ -64,7 +64,7 @@ License key is base64(JSON) with this structure:
 
 Runtime validation performs strict decode and schema checks and returns `False` for malformed input.
 
-`generate_hardware_id()` now uses OS machine identifiers (`/etc/machine-id`, Windows `MachineGuid`, macOS `IOPlatformUUID`) and hashes them, avoiding NIC/MAC churn from switching Wi-Fi/Ethernet/docks.
+`generate_hardware_id()` uses primary OS machine identifiers (`/etc/machine-id`, Windows `MachineGuid`, macOS `IOPlatformUUID`) when available and hashes them. If those identifiers are unavailable, it falls back to deterministic host/platform metadata (and host ID files such as `/etc/hostid` when present) instead of NIC/MAC-derived values.
 
 ## Verified expiration helper
 
