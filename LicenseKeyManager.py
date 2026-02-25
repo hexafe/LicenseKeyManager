@@ -21,6 +21,7 @@ class LicenseKeyManager:
     """A class to manage license generation and validation."""
 
     MAX_LICENSE_KEY_LENGTH = 8192
+    MAX_DAYS_TO_EXPIRE = 36500
     DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
     UTC_DATE_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 
@@ -106,6 +107,15 @@ class LicenseKeyManager:
 
     @staticmethod
     def _get_expiration_date_str(days_to_expire: int) -> str:
+        if not isinstance(days_to_expire, int) or isinstance(days_to_expire, bool):
+            raise ValueError("days_to_expire must be an int")
+        if days_to_expire < 0:
+            raise ValueError("days_to_expire must be greater than or equal to 0")
+        if days_to_expire > LicenseKeyManager.MAX_DAYS_TO_EXPIRE:
+            raise ValueError(
+                f"days_to_expire must be less than or equal to {LicenseKeyManager.MAX_DAYS_TO_EXPIRE}"
+            )
+
         expiration_date = datetime.now(timezone.utc) + timedelta(days=days_to_expire)
         expiration_date = expiration_date.replace(hour=23, minute=59, second=59, microsecond=0)
         return expiration_date.strftime(LicenseKeyManager.UTC_DATE_FORMAT)
