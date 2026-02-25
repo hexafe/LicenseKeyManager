@@ -237,7 +237,7 @@ class LicenseKeyManager:
         try:
             with open("license.key", "r", encoding="utf-8") as file:
                 return file.read().strip()
-        except FileNotFoundError:
+        except (FileNotFoundError, PermissionError, OSError):
             return None
 
     @staticmethod
@@ -258,7 +258,7 @@ class LicenseKeyManager:
         try:
             with open("private.key", "rb") as file:
                 return file.read()
-        except FileNotFoundError:
+        except (FileNotFoundError, PermissionError, OSError):
             return None
 
     @staticmethod
@@ -273,7 +273,7 @@ class LicenseKeyManager:
         try:
             with open("public.key", "rb") as file:
                 return serialization.load_pem_public_key(file.read(), backend=default_backend())
-        except (FileNotFoundError, ValueError, TypeError):
+        except (FileNotFoundError, PermissionError, OSError, ValueError, TypeError):
             return None
 
     @staticmethod

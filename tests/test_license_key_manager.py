@@ -71,6 +71,27 @@ def test_missing_files_fail_gracefully(tmp_path):
         os.chdir(original)
 
 
+
+def test_readers_return_none_on_permission_error(monkeypatch):
+    def _raise_permission_error(*args, **kwargs):
+        raise PermissionError("denied")
+
+    monkeypatch.setattr("builtins.open", _raise_permission_error)
+
+    assert LicenseKeyManager.read_license_key_file() is None
+    assert LicenseKeyManager.read_private_key_file() is None
+    assert LicenseKeyManager.read_public_key_file() is None
+
+
+def test_is_license_valid_returns_false_on_unreadable_files(monkeypatch):
+    def _raise_permission_error(*args, **kwargs):
+        raise PermissionError("denied")
+
+    monkeypatch.setattr("builtins.open", _raise_permission_error)
+
+    assert LicenseKeyManager.is_license_valid_for_current_machine() is False
+
+
 def test_end_to_end_issuer_to_client_flow(tmp_path):
     original = os.getcwd()
     os.chdir(tmp_path)
