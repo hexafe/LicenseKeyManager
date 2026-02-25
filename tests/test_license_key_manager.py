@@ -154,3 +154,23 @@ def test_generate_hardware_id_fallback_is_stable(monkeypatch):
     assert first == second
     assert len(first) == 32
     assert ":" not in first
+
+
+def test_write_private_key_file_does_not_use_chmod(monkeypatch, tmp_path):
+    original = os.getcwd()
+    os.chdir(tmp_path)
+    chmod_calls = []
+
+    def _fail_chmod(*args, **kwargs):
+        chmod_calls.append((args, kwargs))
+        raise AssertionError("os.chmod should not be called")
+
+    monkeypatch.setattr(os, "chmod", _fail_chmod)
+
+    try:
+        LicenseKeyManager.write_private_key_file(b"private-key-bytes")
+    finally:
+        os.chdir(original)
+
+    assert chmod_calls == []
+    assert (tmp_path / "private.key").read_bytes() == b"private-key-bytes"
