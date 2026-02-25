@@ -6,6 +6,7 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Optional
 
+from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
@@ -13,6 +14,8 @@ from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
 class LicenseKeyManager:
     """A class to manage license generation and validation."""
+
+    MAX_LICENSE_KEY_LENGTH = 8192
 
     @staticmethod
     def generate_rsa_key_pair():
@@ -47,6 +50,9 @@ class LicenseKeyManager:
     @staticmethod
     def _decode_license_container(license_key: str) -> Optional[tuple]:
         """Decode and validate outer/base schema of a license key."""
+        if not isinstance(license_key, str) or len(license_key) > LicenseKeyManager.MAX_LICENSE_KEY_LENGTH:
+            return None
+
         try:
             decoded = base64.b64decode(license_key.encode("utf-8"), validate=True)
             container = json.loads(decoded.decode("utf-8"))
@@ -131,7 +137,7 @@ class LicenseKeyManager:
                 hashes.SHA256(),
             )
             return True
-        except Exception:
+        except (InvalidSignature, TypeError, ValueError):
             return False
 
     @staticmethod
@@ -153,6 +159,8 @@ class LicenseKeyManager:
     def write_private_key_file(private_key_pem):
         """Write the private key with restrictive permissions."""
         flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
         fd = os.open("private.key", flags, 0o600)
         try:
             with os.fdopen(fd, "wb") as file:
@@ -184,7 +192,7 @@ class LicenseKeyManager:
         try:
             with open("public.key", "rb") as file:
                 return serialization.load_pem_public_key(file.read(), backend=default_backend())
-        except FileNotFoundError:
+        except (FileNotFoundError, ValueError, TypeError):
             return None
 
     @staticmethod

@@ -99,3 +99,27 @@ def test_end_to_end_issuer_to_client_flow(tmp_path):
             LicenseKeyManager.generate_hardware_id = original_generate_hardware_id
     finally:
         os.chdir(original)
+
+
+def test_overly_large_license_key_fails_gracefully():
+    _, public_key = _generate_keys()
+    assert (
+        LicenseKeyManager.validate_license_key(
+            "A" * (LicenseKeyManager.MAX_LICENSE_KEY_LENGTH + 1),
+            "aa:bb:cc:dd:ee:ff",
+            public_key,
+        )
+        is False
+    )
+
+
+def test_invalid_public_key_file_returns_none(tmp_path):
+    original = os.getcwd()
+    os.chdir(tmp_path)
+    try:
+        with open("public.key", "wb") as file:
+            file.write(b"not-a-valid-public-key")
+
+        assert LicenseKeyManager.read_public_key_file() is None
+    finally:
+        os.chdir(original)
