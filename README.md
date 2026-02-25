@@ -1,6 +1,6 @@
 # LicenseKeyManager
 
-Simple offline license generation and validation based on hardware ID.
+Simple offline license generation and validation based on a stable machine fingerprint.
 
 ## Security model
 
@@ -19,7 +19,7 @@ LicenseKeyManager.generate_keys_and_write_to_files(private_key_password=b"strong
 
 # 2) Create a license for a specific hardware ID
 private_key_pem = LicenseKeyManager.read_private_key_file()
-hardware_id = "aa:bb:cc:dd:ee:ff"  # collected from target machine
+hardware_id = LicenseKeyManager.generate_hardware_id()  # collected from target machine
 license_key = LicenseKeyManager.generate_license_key(
     hardware_id,
     days_to_expire=30,
@@ -55,14 +55,16 @@ License key is base64(JSON) with this structure:
 ```json
 {
   "payload": {
-    "hardware_id": "aa:bb:cc:dd:ee:ff",
-    "expiration_date": "2026-12-31 23:59:59"
+    "hardware_id": "2aef6f5d43e948b4864d5e2c410af947",
+    "expiration_date": "2026-12-31T23:59:59Z"
   },
   "signature": "<base64-signature>"
 }
 ```
 
 Runtime validation performs strict decode and schema checks and returns `False` for malformed input.
+
+`generate_hardware_id()` now uses OS machine identifiers (`/etc/machine-id`, Windows `MachineGuid`, macOS `IOPlatformUUID`) and hashes them, avoiding NIC/MAC churn from switching Wi-Fi/Ethernet/docks.
 
 ## Verified expiration helper
 

@@ -1,6 +1,8 @@
 import base64
 import json
 import os
+import platform
+from datetime import datetime, timedelta
 
 from cryptography.hazmat.primitives import serialization
 
@@ -99,3 +101,83 @@ def test_end_to_end_issuer_to_client_flow(tmp_path):
             LicenseKeyManager.generate_hardware_id = original_generate_hardware_id
     finally:
         os.chdir(original)
+
+
+def test_overly_large_license_key_fails_gracefully():
+    _, public_key = _generate_keys()
+    assert (
+        LicenseKeyManager.validate_license_key(
+            "A" * (LicenseKeyManager.MAX_LICENSE_KEY_LENGTH + 1),
+            "aa:bb:cc:dd:ee:ff",
+            public_key,
+        )
+        is False
+    )
+
+
+def test_invalid_public_key_file_returns_none(tmp_path):
+    original = os.getcwd()
+    os.chdir(tmp_path)
+    try:
+        with open("public.key", "wb") as file:
+            file.write(b"not-a-valid-public-key")
+
+        assert LicenseKeyManager.read_public_key_file() is None
+    finally:
+        os.chdir(original)
+
+
+def test_generated_expiration_uses_utc_format():
+    hardware_id = "aa:bb:cc:dd:ee:ff"
+    private_pem, _ = _generate_keys()
+    license_key = LicenseKeyManager.generate_license_key(hardware_id, 7, private_pem)
+
+    decoded = base64.b64decode(license_key)
+    container = json.loads(decoded.decode("utf-8"))
+    assert container["payload"]["expiration_date"].endswith("Z")
+
+
+def test_legacy_expiration_format_is_still_accepted():
+    hardware_id = "aa:bb:cc:dd:ee:ff"
+    private_pem, public_key = _generate_keys()
+    private_key = serialization.load_pem_private_key(private_pem, password=None)
+
+    payload = {
+        "hardware_id": hardware_id,
+        "expiration_date": (datetime.now() + timedelta(days=7)).strftime(LicenseKeyManager.DATE_FORMAT),
+    }
+    payload_data = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    signature = LicenseKeyManager.sign_data(payload_data, private_key)
+    legacy_license = LicenseKeyManager._encode_license_container(payload, signature)
+
+    assert LicenseKeyManager.validate_license_key(legacy_license, hardware_id, public_key)
+
+
+def test_generate_hardware_id_uses_machine_id(monkeypatch):
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
+    monkeypatch.setattr(
+        LicenseKeyManager,
+        "_read_text_file",
+        staticmethod(lambda path: "fixed-machine-id" if path == "/etc/machine-id" else None),
+    )
+
+    first = LicenseKeyManager.generate_hardware_id()
+    second = LicenseKeyManager.generate_hardware_id()
+
+    assert first == second
+    assert len(first) == 32
+    assert ":" not in first
+
+
+def test_generate_hardware_id_fallback_is_stable(monkeypatch):
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
+    monkeypatch.setattr(platform, "node", lambda: "host-1")
+    monkeypatch.setattr(LicenseKeyManager, "_read_text_file", staticmethod(lambda _: None))
+    monkeypatch.setattr("uuid.getnode", lambda: 123456789)
+
+    first = LicenseKeyManager.generate_hardware_id()
+    second = LicenseKeyManager.generate_hardware_id()
+
+    assert first == second
+    assert len(first) == 32
+    assert ":" not in first

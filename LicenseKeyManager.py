@@ -2,10 +2,16 @@ import base64
 import binascii
 import json
 import os
+import platform
+import re
+import subprocess
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+import hashlib
+
+from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
@@ -13,6 +19,10 @@ from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
 class LicenseKeyManager:
     """A class to manage license generation and validation."""
+
+    MAX_LICENSE_KEY_LENGTH = 8192
+    DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
+    UTC_DATE_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 
     @staticmethod
     def generate_rsa_key_pair():
@@ -25,15 +35,93 @@ class LicenseKeyManager:
         return private_key, private_key.public_key()
 
     @staticmethod
+    def _read_text_file(path: str) -> Optional[str]:
+        try:
+            with open(path, "r", encoding="utf-8") as file:
+                return file.read().strip()
+        except (FileNotFoundError, PermissionError, OSError):
+            return None
+
+    @staticmethod
+    def _build_hardware_id(seed: str) -> str:
+        return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:32]
+
+    @staticmethod
+    def _get_windows_machine_guid() -> Optional[str]:
+        try:
+            output = subprocess.check_output(
+                [
+                    "reg",
+                    "query",
+                    r"HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Cryptography",
+                    "/v",
+                    "MachineGuid",
+                ],
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=2,
+            )
+        except (subprocess.SubprocessError, FileNotFoundError, OSError):
+            return None
+
+        match = re.search(r"MachineGuid\s+REG_\w+\s+(.+)", output)
+        return match.group(1).strip() if match else None
+
+    @staticmethod
+    def _get_macos_platform_uuid() -> Optional[str]:
+        try:
+            output = subprocess.check_output(
+                ["ioreg", "-rd1", "-c", "IOPlatformExpertDevice"],
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=2,
+            )
+        except (subprocess.SubprocessError, FileNotFoundError, OSError):
+            return None
+
+        match = re.search(r'"IOPlatformUUID" = "([^"]+)"', output)
+        return match.group(1).strip() if match else None
+
+    @staticmethod
     def generate_hardware_id():
-        """Generate a hardware ID based on the network adapter MAC address."""
-        return ":".join(hex(i)[2:].zfill(2) for i in uuid.getnode().to_bytes(6, "big"))
+        """Generate a stable hardware ID from machine identifiers (not network adapters)."""
+        system = platform.system().lower()
+
+        if system == "linux":
+            for path in ("/etc/machine-id", "/var/lib/dbus/machine-id"):
+                machine_id = LicenseKeyManager._read_text_file(path)
+                if machine_id:
+                    return LicenseKeyManager._build_hardware_id(f"linux:{machine_id}")
+        elif system == "windows":
+            machine_guid = LicenseKeyManager._get_windows_machine_guid()
+            if machine_guid:
+                return LicenseKeyManager._build_hardware_id(f"windows:{machine_guid}")
+        elif system == "darwin":
+            platform_uuid = LicenseKeyManager._get_macos_platform_uuid()
+            if platform_uuid:
+                return LicenseKeyManager._build_hardware_id(f"darwin:{platform_uuid}")
+
+        fallback_seed = f"{platform.system()}|{platform.node()}|{uuid.getnode()}"
+        return LicenseKeyManager._build_hardware_id(f"fallback:{fallback_seed}")
 
     @staticmethod
     def _get_expiration_date_str(days_to_expire: int) -> str:
-        expiration_date = datetime.now() + timedelta(days=days_to_expire)
-        expiration_date = expiration_date.replace(hour=23, minute=59, second=59)
-        return expiration_date.strftime("%Y-%m-%d %H:%M:%S")
+        expiration_date = datetime.now(timezone.utc) + timedelta(days=days_to_expire)
+        expiration_date = expiration_date.replace(hour=23, minute=59, second=59, microsecond=0)
+        return expiration_date.strftime(LicenseKeyManager.UTC_DATE_FORMAT)
+
+    @staticmethod
+    def _parse_expiration_date(expiration_date_str: str) -> Optional[datetime]:
+        for fmt, tz in (
+            (LicenseKeyManager.UTC_DATE_FORMAT, timezone.utc),
+            (LicenseKeyManager.DATE_FORMAT, None),
+        ):
+            try:
+                parsed = datetime.strptime(expiration_date_str, fmt)
+                return parsed.replace(tzinfo=tz) if tz else parsed
+            except ValueError:
+                continue
+        return None
 
     @staticmethod
     def _encode_license_container(payload: dict, signature: bytes) -> str:
@@ -47,6 +135,9 @@ class LicenseKeyManager:
     @staticmethod
     def _decode_license_container(license_key: str) -> Optional[tuple]:
         """Decode and validate outer/base schema of a license key."""
+        if not isinstance(license_key, str) or len(license_key) > LicenseKeyManager.MAX_LICENSE_KEY_LENGTH:
+            return None
+
         try:
             decoded = base64.b64decode(license_key.encode("utf-8"), validate=True)
             container = json.loads(decoded.decode("utf-8"))
@@ -104,12 +195,12 @@ class LicenseKeyManager:
         if not LicenseKeyManager.verify_signature(payload_data, signature, public_key):
             return False
 
-        try:
-            expiration_date = datetime.strptime(payload["expiration_date"], "%Y-%m-%d %H:%M:%S")
-        except ValueError:
+        expiration_date = LicenseKeyManager._parse_expiration_date(payload["expiration_date"])
+        if expiration_date is None:
             return False
 
-        return datetime.now() <= expiration_date and payload["hardware_id"] == hardware_id
+        now = datetime.now(expiration_date.tzinfo) if expiration_date.tzinfo else datetime.now()
+        return now <= expiration_date and payload["hardware_id"] == hardware_id
 
     @staticmethod
     def sign_data(data, private_key):
@@ -131,7 +222,7 @@ class LicenseKeyManager:
                 hashes.SHA256(),
             )
             return True
-        except Exception:
+        except (InvalidSignature, TypeError, ValueError):
             return False
 
     @staticmethod
@@ -153,6 +244,8 @@ class LicenseKeyManager:
     def write_private_key_file(private_key_pem):
         """Write the private key with restrictive permissions."""
         flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
         fd = os.open("private.key", flags, 0o600)
         try:
             with os.fdopen(fd, "wb") as file:
@@ -184,7 +277,7 @@ class LicenseKeyManager:
         try:
             with open("public.key", "rb") as file:
                 return serialization.load_pem_public_key(file.read(), backend=default_backend())
-        except FileNotFoundError:
+        except (FileNotFoundError, ValueError, TypeError):
             return None
 
     @staticmethod
@@ -225,9 +318,7 @@ class LicenseKeyManager:
         if not LicenseKeyManager.verify_signature(payload_data, signature, public_key):
             return None
 
-        try:
-            datetime.strptime(payload["expiration_date"], "%Y-%m-%d %H:%M:%S")
-        except ValueError:
+        if LicenseKeyManager._parse_expiration_date(payload["expiration_date"]) is None:
             return None
 
         return payload["expiration_date"]
