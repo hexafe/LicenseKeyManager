@@ -3,6 +3,8 @@ import json
 import os
 import platform
 
+import pytest
+from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization
 
 from LicenseKeyManager import LicenseKeyManager
@@ -29,10 +31,57 @@ def test_valid_license_passes():
     assert LicenseKeyManager.validate_license_key(license_key, hardware_id, public_key)
 
 
+def test_generate_license_key_rejects_non_int_days_to_expire():
+    hardware_id = "aa:bb:cc:dd:ee:ff"
+    private_pem, _ = _generate_keys()
+
+    with pytest.raises(ValueError, match="days_to_expire must be an int"):
+        LicenseKeyManager.generate_license_key(hardware_id, "7", private_pem)
+
+    with pytest.raises(ValueError, match="days_to_expire must be an int"):
+        LicenseKeyManager.generate_license_key(hardware_id, 7.5, private_pem)
+
+
+def test_generate_license_key_rejects_negative_days_to_expire():
+    hardware_id = "aa:bb:cc:dd:ee:ff"
+    private_pem, _ = _generate_keys()
+
+    with pytest.raises(ValueError, match="days_to_expire must be greater than or equal to 0"):
+        LicenseKeyManager.generate_license_key(hardware_id, -1, private_pem)
+
+
+def test_generate_license_key_rejects_excessive_days_to_expire():
+    hardware_id = "aa:bb:cc:dd:ee:ff"
+    private_pem, _ = _generate_keys()
+
+    with pytest.raises(
+        ValueError,
+        match=f"days_to_expire must be less than or equal to {LicenseKeyManager.MAX_DAYS_TO_EXPIRE}",
+    ):
+        LicenseKeyManager.generate_license_key(
+            hardware_id,
+            LicenseKeyManager.MAX_DAYS_TO_EXPIRE + 1,
+            private_pem,
+        )
+
+
 def test_expired_license_fails():
     hardware_id = "aa:bb:cc:dd:ee:ff"
     private_pem, public_key = _generate_keys()
-    license_key = LicenseKeyManager.generate_license_key(hardware_id, -1, private_pem)
+
+    private_key_obj = serialization.load_pem_private_key(
+        private_pem,
+        password=None,
+        backend=default_backend(),
+    )
+    payload = {
+        "hardware_id": hardware_id,
+        "expiration_date": "2000-01-01T00:00:00Z",
+    }
+    payload_data = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    signature = LicenseKeyManager.sign_data(payload_data, private_key_obj)
+    license_key = LicenseKeyManager._encode_license_container(payload, signature)
+
     assert not LicenseKeyManager.validate_license_key(license_key, hardware_id, public_key)
 
 
