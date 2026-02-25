@@ -2,9 +2,79 @@ import base64
 import binascii
 import json
 import os
+import platform
+import re
+import subprocess
 import uuid
-from datetime import datetime, timedelta
-from typing import Optional
+import hashlib
+
+    @staticmethod
+    def _read_text_file(path: str) -> Optional[str]:
+        try:
+            with open(path, "r", encoding="utf-8") as file:
+                return file.read().strip()
+        except (FileNotFoundError, PermissionError, OSError):
+            return None
+
+    @staticmethod
+    def _build_hardware_id(seed: str) -> str:
+        return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:32]
+
+    @staticmethod
+    def _get_windows_machine_guid() -> Optional[str]:
+        try:
+            output = subprocess.check_output(
+                [
+                    "reg",
+                    "query",
+                    r"HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Cryptography",
+                    "/v",
+                    "MachineGuid",
+                ],
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=2,
+            )
+        except (subprocess.SubprocessError, FileNotFoundError, OSError):
+            return None
+
+        match = re.search(r"MachineGuid\s+REG_\w+\s+(.+)", output)
+        return match.group(1).strip() if match else None
+
+    @staticmethod
+    def _get_macos_platform_uuid() -> Optional[str]:
+        try:
+            output = subprocess.check_output(
+                ["ioreg", "-rd1", "-c", "IOPlatformExpertDevice"],
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=2,
+            )
+        except (subprocess.SubprocessError, FileNotFoundError, OSError):
+            return None
+
+        match = re.search(r'"IOPlatformUUID" = "([^"]+)"', output)
+        return match.group(1).strip() if match else None
+
+        """Generate a stable hardware ID from machine identifiers (not network adapters)."""
+        system = platform.system().lower()
+
+        if system == "linux":
+            for path in ("/etc/machine-id", "/var/lib/dbus/machine-id"):
+                machine_id = LicenseKeyManager._read_text_file(path)
+                if machine_id:
+                    return LicenseKeyManager._build_hardware_id(f"linux:{machine_id}")
+        elif system == "windows":
+            machine_guid = LicenseKeyManager._get_windows_machine_guid()
+            if machine_guid:
+                return LicenseKeyManager._build_hardware_id(f"windows:{machine_guid}")
+        elif system == "darwin":
+            platform_uuid = LicenseKeyManager._get_macos_platform_uuid()
+            if platform_uuid:
+                return LicenseKeyManager._build_hardware_id(f"darwin:{platform_uuid}")
+
+        fallback_seed = f"{platform.system()}|{platform.node()}|{uuid.getnode()}"
+        return LicenseKeyManager._build_hardware_id(f"fallback:{fallback_seed}")
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.backends import default_backend

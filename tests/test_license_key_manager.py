@@ -1,6 +1,7 @@
 import base64
 import json
 import os
+import platform
 
 from cryptography.hazmat.primitives import serialization
 
@@ -123,3 +124,33 @@ def test_invalid_public_key_file_returns_none(tmp_path):
         assert LicenseKeyManager.read_public_key_file() is None
     finally:
         os.chdir(original)
+
+
+def test_generate_hardware_id_uses_machine_id(monkeypatch):
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
+    monkeypatch.setattr(
+        LicenseKeyManager,
+        "_read_text_file",
+        staticmethod(lambda path: "fixed-machine-id" if path == "/etc/machine-id" else None),
+    )
+
+    first = LicenseKeyManager.generate_hardware_id()
+    second = LicenseKeyManager.generate_hardware_id()
+
+    assert first == second
+    assert len(first) == 32
+    assert ":" not in first
+
+
+def test_generate_hardware_id_fallback_is_stable(monkeypatch):
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
+    monkeypatch.setattr(platform, "node", lambda: "host-1")
+    monkeypatch.setattr(LicenseKeyManager, "_read_text_file", staticmethod(lambda _: None))
+    monkeypatch.setattr("uuid.getnode", lambda: 123456789)
+
+    first = LicenseKeyManager.generate_hardware_id()
+    second = LicenseKeyManager.generate_hardware_id()
+
+    assert first == second
+    assert len(first) == 32
+    assert ":" not in first
